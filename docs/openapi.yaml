@@ -1,0 +1,932 @@
+openapi: 3.1.0
+info:
+  title: Прогноз инцидентов в коллекторах
+  description: 'Вероятность отказа, пожара, подтопления и любого инцидента на объекте в ближайшие 24 ч по журналу событий
+    СМВУ. Порядок работы: POST /events → POST /predict → GET /predictions.'
+  version: '1.0'
+paths:
+  /health:
+    get:
+      summary: Состояние сервиса и данных
+      operationId: health
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              example:
+                статус: ok
+                версия_модели: '2026-09-26T01:43:51+00:00'
+                первый_день_данных: '2019-01-01'
+                последний_день_данных: '2026-06-30'
+                прогноз_возможен_по: '2026-07-01'
+                календарь_по: '2026-12-31'
+                объектов: 78
+  /objects:
+    get:
+      summary: Справочник объектов
+      operationId: objects
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ObjectInfo'
+                type: array
+                title: Response Objects
+              example:
+              - ид_объект: 20
+                название: объект Фита
+                родитель: 6
+                название_родителя: объект Бета
+                каналов: 244
+                есть_телеметрия: true
+              - ид_объект: 28
+                название: объект Вита
+                родитель: 9
+                название_родителя: объект Вита
+                каналов: 134
+                есть_телеметрия: true
+  /events:
+    post:
+      summary: Загрузить события журнала
+      description: CSV формата ext-journal (`ид_события, ид_канала_данных, дата, время, тревожное, значение_датчика`) телом
+        запроса (`text/csv`) или файлом (`multipart/form-data`, поле `file`). Повторная загрузка тех же строк ничего не меняет.
+        После загрузки пересчитываются эпизоды и суточные витрины; прогнозы на затронутые даты нужно запросить заново.
+      operationId: events
+      requestBody:
+        content:
+          text/csv:
+            schema:
+              type: string
+          multipart/form-data:
+            schema:
+              properties:
+                file:
+                  type: string
+                  format: binary
+              type: object
+              required:
+              - file
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestReport'
+              example:
+                строк_в_файле: 169993
+                строк_заголовка: 0
+                полных_дублей: 0
+                битых_дат: 0
+                строк_после_очистки: 169993
+                тревожных: 207
+                строк_каналов_вне_справочника: 0
+                уже_загружено: 0
+                добавлено: 169993
+                первый_день: '2026-08-01'
+                последний_день: '2026-08-01'
+                пересчитано_с: '2026-07-30'
+                пересчитано_по: '2026-08-01'
+                секунд: 33.8
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Unprocessable Entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /predict:
+    post:
+      summary: Рассчитать прогноз на сутки
+      description: Прогноз на сутки `date` по данным строго до `date` 00:00 для всех объектов; результат сохраняется и читается
+        через GET /predictions. Повторный вызов пересчитывает.
+      operationId: predict
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          description: сутки прогноза D, YYYY-MM-DD
+          title: Date
+        description: сутки прогноза D, YYYY-MM-DD
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictSummary'
+              example:
+                дата: '2026-06-30'
+                объектов: 78
+                с_прогнозом: 76
+                замаскировано:
+                  плановые работы АКМ: 2
+                секунд: 9.0
+                предупреждения: []
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Bad Request
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Unprocessable Entity
+  /predictions:
+    get:
+      summary: Прогнозы на сутки
+      operationId: predictions
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          description: сутки прогноза D, YYYY-MM-DD
+          title: Date
+        description: сутки прогноза D, YYYY-MM-DD
+      - name: ид_объект
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: только этот объект
+          title: Ид Объект
+        description: только этот объект
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Predictions'
+              example:
+                дата: '2026-06-30'
+                версия_модели: '2026-09-26T01:43:51+00:00'
+                объекты:
+                - ид_объект: 5343
+                  дата: '2026-06-30'
+                  маска: null
+                  прогноз:
+                    отказ:
+                      вероятность: 0.5802614286860326
+                      балл: 0.5257794534918083
+                      уровень: высокий
+                      причины:
+                      - признак: дней_с_последнего_отказ
+                        смысл: суток с последних суток, когда был длинный эпизод класса «отказ» (3 650 – не было)
+                        значение: 1.0
+                        вклад: 0.9040158132000629
+                      - признак: доля_дней_отказ_7д
+                        смысл: доля суток с длинным эпизодом класса «отказ» среди суток окна без маски, окно 7 сут.
+                        значение: 0.7142857313156128
+                        вклад: 0.786475661888957
+                      - признак: доля_дней_отказ_90д
+                        смысл: доля суток с длинным эпизодом класса «отказ» среди суток окна без маски, окно 90 сут.
+                        значение: 0.16853933036327362
+                        вклад: 0.5636231207439079
+                    пожар:
+                      вероятность: 0.5446126967670238
+                      балл: 0.4932542882991635
+                      уровень: высокий
+                      причины:
+                      - признак: эпизодов_пожар_30д_на_канал
+                        смысл: длинных эпизодов класса «пожар» за 30 суток на канал типов этого класса, окно 30 сут.
+                        значение: 1.348314642906189
+                        вклад: 1.2000596281846687
+                      - признак: каналов_дым
+                        смысл: каналов типа «дым» у объекта
+                        значение: 267.0
+                        вклад: 1.1625354853117185
+                      - признак: часов_с_последнего_пожар
+                        смысл: часов от момента, когда стал известен последний длинный эпизод класса «пожар», до D 00:00 (не
+                          было или дальше 720 ч – 720)
+                        значение: 12.688888549804688
+                        вклад: 0.8884636586067816
+                    подтопление:
+                      вероятность: 0.0012466991811379614
+                      балл: 0.004424869260927253
+                      уровень: низкий
+                      причины:
+                      - признак: дней_до_нерабочего
+                        смысл: дней от D до ближайшего нерабочего дня (0 – D нерабочий), не больше 10
+                        значение: 4.0
+                        вклад: 0.011688653761584525
+                      - признак: доля_активных_каналов_1д
+                        смысл: активных вчера каналов к числу каналов объекта в справочнике, окно 1 сут.
+                        значение: 0.9556786417961121
+                        вклад: 0.009755893225560171
+                      - признак: записей_к_медиане_1д
+                        смысл: записей вчера к медиане за 28 суток, окно 1 сут.
+                        значение: 36.589744567871094
+                        вклад: 0.006852814271571544
+                    любой_инцидент:
+                      вероятность: 0.6305062650562314
+                      балл: 0.6550145962689775
+                      уровень: высокий
+                      причины:
+                      - признак: доля_дней_любой_инцидент_90д
+                        смысл: доля суток с длинным эпизодом класса «любой_инцидент» среди суток окна без маски, окно 90 сут.
+                        значение: 0.3483146131038666
+                        вклад: 0.829965167652673
+                      - признак: часов_с_последнего_любой_инцидент
+                        смысл: часов от момента, когда стал известен последний длинный эпизод класса «любой_инцидент», до
+                          D 00:00 (не было или дальше 720 ч – 720)
+                        значение: 12.688888549804688
+                        вклад: 0.7913361877859296
+                      - признак: доля_дней_любой_инцидент_7д
+                        смысл: доля суток с длинным эпизодом класса «любой_инцидент» среди суток окна без маски, окно 7 сут.
+                        значение: 1.0
+                        вклад: 0.5182578151961487
+                  фоновый_риск:
+                    газ: 0.0007303489867138158
+                    потеря_связи: 0.0028815243021731835
+                    неисправность_охраны: 0.17279183634218137
+                  локация_отказа:
+                    каналы:
+                    - ид_канала_данных: 229358
+                      пикет: 232.0
+                      дней_с_последнего: 1
+                      дней_с_отказом_30д: 3
+                    - ид_канала_данных: 229375
+                      пикет: 225.0
+                      дней_с_последнего: 4
+                      дней_с_отказом_30д: 2
+                    - ид_канала_данных: 228571
+                      пикет: 275.0
+                      дней_с_последнего: 4
+                      дней_с_отказом_30д: 1
+                    пикеты:
+                    - пикет: 232.0
+                      дней_с_последнего: 1
+                      дней_с_отказом_30д: 3
+                    - пикет: 225.0
+                      дней_с_последнего: 4
+                      дней_с_отказом_30д: 2
+                    - пикет: 275.0
+                      дней_с_последнего: 4
+                      дней_с_отказом_30д: 1
+                  плановые_работы: null
+                - ид_объект: 3360
+                  дата: '2026-06-30'
+                  маска: плановые работы АКМ
+                  прогноз:
+                    отказ:
+                      вероятность: null
+                      балл: null
+                      уровень: нет данных
+                      причины: []
+                    пожар:
+                      вероятность: null
+                      балл: null
+                      уровень: нет данных
+                      причины: []
+                    подтопление:
+                      вероятность: null
+                      балл: null
+                      уровень: нет данных
+                      причины: []
+                    любой_инцидент:
+                      вероятность: null
+                      балл: null
+                      уровень: нет данных
+                      причины: []
+                  фоновый_риск:
+                    газ: 0.0007396215279939763
+                    потеря_связи: 0.001424456276136547
+                    неисправность_охраны: 0.0018906472305745688
+                  локация_отказа:
+                    каналы:
+                    - ид_канала_данных: 103931
+                      пикет: 121.0
+                      дней_с_последнего: 8
+                      дней_с_отказом_30д: 2
+                    - ид_канала_данных: 103922
+                      пикет: 85.0
+                      дней_с_последнего: 8
+                      дней_с_отказом_30д: 1
+                    - ид_канала_данных: 103925
+                      пикет: 104.0
+                      дней_с_последнего: 15
+                      дней_с_отказом_30д: 2
+                    пикеты:
+                    - пикет: 121.0
+                      дней_с_последнего: 8
+                      дней_с_отказом_30д: 2
+                    - пикет: 85.0
+                      дней_с_последнего: 8
+                      дней_с_отказом_30д: 1
+                    - пикет: 104.0
+                      дней_с_последнего: 15
+                      дней_с_отказом_30д: 2
+                  плановые_работы:
+                    начало: '2026-07-02'
+                    конец: '2026-07-23'
+                    источник: график
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Bad Request
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Unprocessable Entity
+  /schedule:
+    get:
+      summary: Окна плановых работ АКМ
+      description: 'Окна ППР аппаратуры контроля метана: график 2026 и окна, найденные по журналу. С `date` – только окна,
+        в которые сутки попадают с запасом ±3 сут. (эти объекты замаскированы).'
+      operationId: schedule
+      parameters:
+      - name: date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          description: YYYY-MM-DD
+          title: Date
+        description: YYYY-MM-DD
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ScheduleWindow'
+                title: Response Schedule
+              example:
+              - начало: '2026-07-02'
+                конец: '2026-07-23'
+                источник: график
+                ид_объект: 3360
+              - начало: '2026-06-04'
+                конец: '2026-06-29'
+                источник: график
+                ид_объект: 5657
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Bad Request
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Not Found
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Conflict
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Unprocessable Entity
+components:
+  schemas:
+    Background:
+      properties:
+        газ:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Газ
+        потеря_связи:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Потеря Связи
+        неисправность_охраны:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Неисправность Охраны
+      type: object
+      required:
+      - газ
+      - потеря_связи
+      - неисправность_охраны
+      title: Background
+    Channel:
+      properties:
+        ид_канала_данных:
+          type: integer
+          title: Ид Канала Данных
+        пикет:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Пикет
+        дней_с_последнего:
+          type: integer
+          title: Дней С Последнего
+          description: суток с последнего отказа канала
+        дней_с_отказом_30д:
+          type: integer
+          title: Дней С Отказом 30Д
+      type: object
+      required:
+      - ид_канала_данных
+      - пикет
+      - дней_с_последнего
+      - дней_с_отказом_30д
+      title: Channel
+    Error:
+      properties:
+        ошибка:
+          type: string
+          title: Ошибка
+          description: что пошло не так
+        подробности:
+          title: Подробности
+          description: 'детали: ошибки валидации, допустимый диапазон дат и т. п.'
+      type: object
+      required:
+      - ошибка
+      title: Error
+    FaultLocation:
+      properties:
+        каналы:
+          items:
+            $ref: '#/components/schemas/Channel'
+          type: array
+          title: Каналы
+        пикеты:
+          items:
+            $ref: '#/components/schemas/Picket'
+          type: array
+          title: Пикеты
+      type: object
+      required:
+      - каналы
+      - пикеты
+      title: FaultLocation
+    Forecasts:
+      properties:
+        отказ:
+          $ref: '#/components/schemas/TargetForecast'
+        пожар:
+          $ref: '#/components/schemas/TargetForecast'
+        подтопление:
+          $ref: '#/components/schemas/TargetForecast'
+        любой_инцидент:
+          $ref: '#/components/schemas/TargetForecast'
+      type: object
+      required:
+      - отказ
+      - пожар
+      - подтопление
+      - любой_инцидент
+      title: Forecasts
+    Health:
+      properties:
+        статус:
+          type: string
+          const: ok
+          title: Статус
+        версия_модели:
+          type: string
+          title: Версия Модели
+          description: created_at из models/config.json
+        первый_день_данных:
+          type: string
+          format: date
+          title: Первый День Данных
+        последний_день_данных:
+          type: string
+          format: date
+          title: Последний День Данных
+          description: последние сутки, за которые загружены события
+        прогноз_возможен_по:
+          type: string
+          format: date
+          title: Прогноз Возможен По
+          description: 'последний день данных + 1: прогноз строится по данным до D 00:00'
+        календарь_по:
+          type: string
+          format: date
+          title: Календарь По
+          description: до какой даты загружен производственный календарь РФ
+        объектов:
+          type: integer
+          title: Объектов
+      type: object
+      required:
+      - статус
+      - версия_модели
+      - первый_день_данных
+      - последний_день_данных
+      - прогноз_возможен_по
+      - календарь_по
+      - объектов
+      title: Health
+    IngestReport:
+      properties:
+        строк_в_файле:
+          type: integer
+          title: Строк В Файле
+        строк_заголовка:
+          type: integer
+          title: Строк Заголовка
+          description: строки-заголовки внутри файла (отброшены)
+        полных_дублей:
+          type: integer
+          title: Полных Дублей
+          description: полные повторы строк в файле (отброшены)
+        битых_дат:
+          type: integer
+          title: Битых Дат
+          description: строки с нераспознанной датой/временем (отброшены)
+        строк_после_очистки:
+          type: integer
+          title: Строк После Очистки
+        тревожных:
+          type: integer
+          title: Тревожных
+          description: строк с флагом «тревожное»
+        строк_каналов_вне_справочника:
+          type: integer
+          title: Строк Каналов Вне Справочника
+          description: 'приняты, но в прогноз не идут: канала нет в справочнике'
+        уже_загружено:
+          type: integer
+          title: Уже Загружено
+          description: строки, которые уже были в хранилище (повторная загрузка)
+        добавлено:
+          type: integer
+          title: Добавлено
+        первый_день:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Первый День
+          description: сутки новых строк; null – новых строк нет
+        последний_день:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Последний День
+        пересчитано_с:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Пересчитано С
+          description: с каких суток пересчитаны витрины (первый день − 2 сут.; включая пересчет, не завершенный из-за сбоя
+            сервиса)
+        пересчитано_по:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Пересчитано По
+        секунд:
+          type: number
+          title: Секунд
+      type: object
+      required:
+      - строк_в_файле
+      - строк_заголовка
+      - полных_дублей
+      - битых_дат
+      - строк_после_очистки
+      - тревожных
+      - строк_каналов_вне_справочника
+      - уже_загружено
+      - добавлено
+      - первый_день
+      - последний_день
+      - пересчитано_с
+      - пересчитано_по
+      - секунд
+      title: IngestReport
+    ObjectForecast:
+      properties:
+        ид_объект:
+          type: integer
+          title: Ид Объект
+        дата:
+          type: string
+          format: date
+          title: Дата
+        маска:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Маска
+          description: почему прогноза нет (объект не на связи, плановые работы АКМ, ...); null – прогноз есть
+        прогноз:
+          $ref: '#/components/schemas/Forecasts'
+        фоновый_риск:
+          $ref: '#/components/schemas/Background'
+          description: 'сглаженная частота за 365 суток: газ, потеря связи, неисправность охраны'
+        локация_отказа:
+          $ref: '#/components/schemas/FaultLocation'
+          description: 'где искать отказ: топ-3 каналов и пикетов по истории'
+        плановые_работы:
+          anyOf:
+          - $ref: '#/components/schemas/Window'
+          - type: 'null'
+          description: окно ППР аппаратуры контроля метана (±3 сут.), в которое попадают сутки D
+      type: object
+      required:
+      - ид_объект
+      - дата
+      - маска
+      - прогноз
+      - фоновый_риск
+      - локация_отказа
+      - плановые_работы
+      title: ObjectForecast
+    ObjectInfo:
+      properties:
+        ид_объект:
+          type: integer
+          title: Ид Объект
+        название:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Название
+        родитель:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Родитель
+        название_родителя:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Название Родителя
+        каналов:
+          type: integer
+          title: Каналов
+          description: каналов в справочнике
+        есть_телеметрия:
+          type: boolean
+          title: Есть Телеметрия
+          description: каналы объекта присылали замеры (температура, газ)
+      type: object
+      required:
+      - ид_объект
+      - название
+      - родитель
+      - название_родителя
+      - каналов
+      - есть_телеметрия
+      title: ObjectInfo
+    Picket:
+      properties:
+        пикет:
+          type: number
+          title: Пикет
+        дней_с_последнего:
+          type: integer
+          title: Дней С Последнего
+        дней_с_отказом_30д:
+          type: integer
+          title: Дней С Отказом 30Д
+      type: object
+      required:
+      - пикет
+      - дней_с_последнего
+      - дней_с_отказом_30д
+      title: Picket
+    PredictSummary:
+      properties:
+        дата:
+          type: string
+          format: date
+          title: Дата
+        объектов:
+          type: integer
+          title: Объектов
+        с_прогнозом:
+          type: integer
+          title: С Прогнозом
+          description: объектов без маски – для них есть вероятности
+        замаскировано:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Замаскировано
+          description: маска → число объектов
+        секунд:
+          type: number
+          title: Секунд
+        предупреждения:
+          items:
+            type: string
+          type: array
+          title: Предупреждения
+      type: object
+      required:
+      - дата
+      - объектов
+      - с_прогнозом
+      - замаскировано
+      - секунд
+      - предупреждения
+      title: PredictSummary
+    Predictions:
+      properties:
+        дата:
+          type: string
+          format: date
+          title: Дата
+        версия_модели:
+          type: string
+          title: Версия Модели
+        объекты:
+          items:
+            $ref: '#/components/schemas/ObjectForecast'
+          type: array
+          title: Объекты
+      type: object
+      required:
+      - дата
+      - версия_модели
+      - объекты
+      title: Predictions
+    Reason:
+      properties:
+        признак:
+          type: string
+          title: Признак
+        смысл:
+          type: string
+          title: Смысл
+        значение:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Значение
+        вклад:
+          type: number
+          title: Вклад
+          description: вклад признака в логит модели (SHAP), только положительные
+      type: object
+      required:
+      - признак
+      - смысл
+      - значение
+      - вклад
+      title: Reason
+    ScheduleWindow:
+      properties:
+        начало:
+          type: string
+          format: date
+          title: Начало
+        конец:
+          type: string
+          format: date
+          title: Конец
+        источник:
+          type: string
+          enum:
+          - график
+          - журнал
+          title: Источник
+          description: график ППР 2026 или окно, найденное по журналу
+        ид_объект:
+          type: integer
+          title: Ид Объект
+      type: object
+      required:
+      - начало
+      - конец
+      - источник
+      - ид_объект
+      title: ScheduleWindow
+    TargetForecast:
+      properties:
+        вероятность:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Вероятность
+          description: вероятность начала эпизода класса в [D 00:00, D + 24 ч)
+        балл:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Балл
+          description: та же оценка модели до калибровки; для сортировки
+        уровень:
+          type: string
+          enum:
+          - высокий
+          - средний
+          - низкий
+          - нет данных
+          title: Уровень
+        причины:
+          items:
+            $ref: '#/components/schemas/Reason'
+          type: array
+          title: Причины
+          description: до 3 признаков, сильнее всего поднявших риск
+      type: object
+      required:
+      - вероятность
+      - балл
+      - уровень
+      - причины
+      title: TargetForecast
+    Window:
+      properties:
+        начало:
+          type: string
+          format: date
+          title: Начало
+        конец:
+          type: string
+          format: date
+          title: Конец
+        источник:
+          type: string
+          enum:
+          - график
+          - журнал
+          title: Источник
+          description: график ППР 2026 или окно, найденное по журналу
+      type: object
+      required:
+      - начало
+      - конец
+      - источник
+      title: Window

@@ -1,0 +1,40 @@
+services:
+  jupyter:
+    build: .
+    image: annanas-jupyter
+    container_name: annanas-jupyter
+    ports:
+      - "127.0.0.1:8888:8888" # Jupyter Lab
+      - "127.0.0.1:4040:4040" # Spark UI
+    volumes:
+      - .:/app
+      # venv живет в образе, хостовый .venv (macOS) внутрь не попадает
+      - /app/.venv
+      - spark-tmp:/spark-tmp
+    environment:
+      SPARK_TMP_DIR: /spark-tmp
+      # локальное время процесса = время Spark-сессии, иначе collect() сдвигает timestamp на 3 ч
+      TZ: Europe/Moscow
+    restart: unless-stopped
+
+  inference:
+    # тот же образ, что у jupyter: Python + Java 17 (Spark нужен для POST /events)
+    image: annanas-jupyter
+    build: .
+    container_name: annanas-inference
+    command: ["uvicorn", "annanas.service.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000" # API, документация: http://localhost:8000/docs
+    volumes:
+      - .:/app                # datasets/processed: хранилище событий и артефакты модели
+      - /app/.venv
+      - spark-tmp:/spark-tmp
+    environment:
+      SPARK_TMP_DIR: /spark-tmp
+      TZ: Europe/Moscow
+      # glibc: не больше 2 арен malloc, иначе потоки uvicorn раздувают память Python (под нагрузкой 6 ГБ вместо 2)
+      MALLOC_ARENA_MAX: 2
+    restart: unless-stopped
+
+volumes:
+  spark-tmp:

@@ -1,0 +1,8 @@
+.venv/
+datasets/
+archive/
+docs/
+.spark-tmp/
+**/__pycache__/
+**/.ipynb_checkpoints/
+.DS_Store
